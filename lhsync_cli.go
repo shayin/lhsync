@@ -15,15 +15,17 @@ import (
 	"hash/crc32"
 	"github.com/fsnotify/fsnotify"
 	"sync"
+	"strings"
 )
 
 var (
 	dest     = flag.String("dest", "127.0.0.1:5623", "sync to server")
 	watchdir = flag.String("dir", "", "watch dir")
-	file = flag.String("file", "", "sync file")
+	file     = flag.String("file", "", "sync file")
 )
 
 var is_little_endian bool
+var watcher *fsnotify.Watcher
 
 func main() {
 	flag.Parse()
@@ -32,8 +34,8 @@ func main() {
 	}
 
 	is_little_endian = systemEndian()
-
-	watcher, err := fsnotify.NewWatcher()
+	var err error
+	watcher, err = fsnotify.NewWatcher()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,10 +46,7 @@ func main() {
 			select {
 			case event := <-watcher.Events:
 				log.Infof("event: %+v", event)
-				if event.Op&fsnotify.Write == fsnotify.Write {
-					log.Infof("modified file:", event.Name)
-					syncToServer(event.Name, *dest)
-				}
+				syncToServer(event, *dest)
 			case err := <-watcher.Errors:
 				log.Errorf("error:", err)
 			}
@@ -60,8 +59,8 @@ func main() {
 	wg.Wait()
 }
 
-func syncToServer(fName string, dest string) error {
-	fileInfo, err := getFileInfo(fName)
+func syncToServer(event fsnotify.Event, dest string) error {
+	fileInfo, err := getSyncFileInfo(event)
 	if err != nil {
 		return err
 	}
@@ -71,26 +70,17 @@ func syncToServer(fName string, dest string) error {
 		return err
 	}
 	defer conn.Close()
-	fHandler, err := os.Open(fName)
-	if err != nil {
-		log.Errorf("open file error, %s", err.Error())
-		return err
-	}
-	defer fHandler.Close()
-	var packet = new(syncfile.SyncPacket)
-	packet.Header = fileInfo
-	io.Copy(packet, fHandler)
 
-	tcpPacket, err := doPacket(packet)
+	tcpPacket, err := doPacket(fileInfo)
 	if err != nil {
 		log.Errorf("dopacket error, %s", err.Error())
 		return err
 	}
 
 	// 开始发送
-	log.Infof("begin sync %s to %s", fName, dest)
+	log.Infof("begin sync %s to %s", event.Name, dest)
 	conn.Write(tcpPacket)
-	log.Infof("complete sync %s to %s", fName, dest)
+	log.Infof("complete sync %s to %s", event.Name, dest)
 
 	for {
 		buffer := make([]byte, 1024)
@@ -105,7 +95,7 @@ func syncToServer(fName string, dest string) error {
 
 // 打包
 // |0xFF|0xFF|len(高)|len(低)|Data|CRC高16位|0xFF|0xFE
-func doPacket(packet *syncfile.SyncPacket) (tcpPacket []byte, err error) {
+func doPacket(packet *syncfile.SyncFile) (tcpPacket []byte, err error) {
 	jsonData, err := json.Marshal(packet)
 	if err != nil {
 		return
@@ -136,28 +126,56 @@ func doPacket(packet *syncfile.SyncPacket) (tcpPacket []byte, err error) {
 	return
 }
 
-func getFileInfo(fName string) (*syncfile.SyncFile, error) {
+func getSyncFileInfo(event fsnotify.Event) (*syncfile.SyncFile, error) {
 	sf := new(syncfile.SyncFile)
-	fi, err := os.Lstat(fName)
+	path := event.Name
+	sf.FileOp = event.Op
+	sf.FileName = getRelativeFileName(path)
+
+	switch event.Op {
+	case fsnotify.Create:
+		watcher.Add(path)
+	case fsnotify.Write:
+		f, err := os.Open(path)
+		if err != nil {
+			log.Errorf("open error, %s", err.Error())
+			return sf, err
+		}
+		defer f.Close()
+		h := md5.New()
+		_, err = io.Copy(sf, f)
+		if err != nil {
+			log.Errorf("iocopy error, %s", err.Error())
+			return sf, err
+		}
+		_, err = io.Copy(h, f)
+		sf.FileMd5 = fmt.Sprintf("%x", h.Sum(nil))
+	case fsnotify.Chmod:
+	case fsnotify.Remove:
+		return sf, nil
+	case fsnotify.Rename:
+	default:
+		err := fmt.Errorf("unknown event: %+v", event.Op)
+		log.Error(err)
+		return sf, err
+	}
+	fi, err := os.Lstat(path)
 	if err != nil {
 		log.Errorf("get file info error, %s", err.Error())
 		return sf, err
 	}
-	f, err := os.Open(fName)
-	if err != nil {
-		log.Errorf("open error, %s", err.Error())
-		return sf, err
-	}
 
-	h := md5.New()
-	_, err = io.Copy(h, f)
-	sf.FileName = fi.Name()
 	sf.FileSize = fi.Size()
 	sf.FileMt = fi.ModTime()
 	sf.FileMode = fi.Mode().Perm()
-	sf.FileMd5 = fmt.Sprintf("%x", h.Sum(nil))
 	sf.FileType = fi.IsDir()
+	log.Debugf("file: %+v", sf)
 	return sf, nil
+}
+
+func getRelativeFileName(allPath string) string {
+	pathInfo := strings.SplitAfter(allPath, *watchdir)
+	return pathInfo[1]
 }
 
 // 是否小字节序

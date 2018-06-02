@@ -11,6 +11,7 @@ import (
 	"io"
 	"fmt"
 	"github.com/shayin/lhsync/syncfile"
+	"github.com/fsnotify/fsnotify"
 )
 
 var (
@@ -118,7 +119,7 @@ func handle(conn net.Conn) {
 			if recvByte == 0xFE {
 				//执行数据包校验
 				if (crc32.ChecksumIEEE(recvBuffer)>>16)&0xFFFF == uint32(crc16) {
-					var packet = new(syncfile.SyncPacket)
+					var packet = new(syncfile.SyncFile)
 					//把拿到的数据反序列化出来
 					json.Unmarshal(recvBuffer, packet)
 					//新开协程处理数据
@@ -136,9 +137,26 @@ func handle(conn net.Conn) {
 	}
 }
 
-func processData(packet *syncfile.SyncPacket, conn net.Conn) {
-	log.Debug(string(packet.Content))
-	err := writeFile(packet.Content, packet.Header.FileName, packet.Header.FileMode)
+func processData(packet *syncfile.SyncFile, conn net.Conn) {
+	log.Debug(packet)
+	var err error
+	path := fmt.Sprintf("%s/%s", *dir, packet.FileName)
+	switch packet.FileOp {
+	case fsnotify.Create, fsnotify.Write:
+		if !packet.FileType {
+			err = writeFile(packet.Content, path, packet.FileMode)
+		} else {
+			err = os.MkdirAll(path, packet.FileMode)
+		}
+	case fsnotify.Chmod:
+		err = chmodFile(path, packet.FileMode)
+	case fsnotify.Remove:
+		err = removeFile(path)
+	case fsnotify.Rename:
+
+	default:
+		err = fmt.Errorf("unknow file operation: %+v", packet.FileOp)
+	}
 	if err != nil {
 		conn.Write([]byte(fmt.Sprintf("sync failure,  %s\n", err.Error())))
 		return
@@ -146,15 +164,38 @@ func processData(packet *syncfile.SyncPacket, conn net.Conn) {
 	conn.Write([]byte("sync success \n"))
 }
 
-func writeFile(data []byte, fName string, fMode os.FileMode) error {
-	path := fmt.Sprintf("%s/%s", *dir, fName)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, fMode)
+func renameFile(oldPath string, newPath string) error {
+	err := os.Rename(oldPath, newPath)
 	if err != nil {
-		log.Errorf("write file error, ", err.Error())
+		log.Errorf("rename %s error: ", err.Error())
+	}
+	return err
+}
+
+func removeFile(path string) error {
+	err := os.RemoveAll(path)
+	if err != nil {
+		log.Errorf("remove %s error: ", err.Error())
+	}
+	return err
+}
+
+func chmodFile(path string, fMode os.FileMode) error {
+	err := os.Chmod(path, fMode)
+	if err != nil {
+		log.Errorf("chmod %s error: ", err.Error())
+	}
+	return err
+}
+
+func writeFile(data []byte, path string, fMode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_TRUNC|os.O_CREATE, fMode)
+	if err != nil {
+		log.Errorf("write file error, %s", err.Error())
 		return err
 	}
 	defer f.Close()
-	n, err := f.WriteString(string(data))
+	n, err := f.Write(data)
 	log.Debugf("%d, %s", n, string(data))
 	if err != nil {
 		log.Errorf("write file error, ", err.Error())
