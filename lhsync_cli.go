@@ -16,6 +16,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"sync"
 	"strings"
+	"path/filepath"
 )
 
 var (
@@ -52,10 +53,25 @@ func main() {
 			}
 		}
 	}()
-	err = watcher.Add(*watchdir)
+
+	err = filepath.Walk(*watchdir, func(path string, f os.FileInfo, err error) error {
+		if f == nil {
+			return err
+		}
+		if f.IsDir() {
+			log.Infof("watch: %s", path)
+			err = watcher.Add(path)
+			if err != nil {
+				log.Fatal(err)
+			}
+			return nil
+		}
+		return nil
+	})
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("watch dir %s error: %s", *watchdir, err.Error())
 	}
+
 	wg.Wait()
 }
 
@@ -131,6 +147,9 @@ func getSyncFileInfo(event fsnotify.Event) (*syncfile.SyncFile, error) {
 	path := event.Name
 	sf.FileOp = event.Op
 	sf.FileName = getRelativeFileName(path)
+	if sf.FileName == "" {
+		return sf, fmt.Errorf("cannot get relative file name, path: %s, watchpath: %s", path, *watchdir)
+	}
 
 	switch event.Op {
 	case fsnotify.Create:
@@ -174,8 +193,17 @@ func getSyncFileInfo(event fsnotify.Event) (*syncfile.SyncFile, error) {
 }
 
 func getRelativeFileName(allPath string) string {
+	defer func() {
+		if err := recover(); err != nil {
+			log.Error(err)
+		}
+	}()
 	pathInfo := strings.SplitAfter(allPath, *watchdir)
-	return pathInfo[1]
+	if len(pathInfo) <= 1 {
+		return ""
+	}
+	p := pathInfo[1]
+	return p
 }
 
 // 是否小字节序
