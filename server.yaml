@@ -1,4 +1,7 @@
+# 服务器监听地址
 listen: 127.0.0.1:12356
+
+# 同步路径
 sync_path:
   payadmin: /root/lhsync/server/payadmin
   vip: /root/lhsync/server/vip

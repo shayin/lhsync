@@ -1,6 +1,8 @@
+# 监控目录
 watch_dir:
   vip: /root/lhsync/client/vip
   payadmin: /root/lhsync/client/payadmin
 
+# 同步服务器
 dest:
   127.0.0.1:12356
