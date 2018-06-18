@@ -1,29 +1,39 @@
 package syncfile
 
 import (
-	"time"
-	"os"
-	"github.com/fsnotify/fsnotify"
+	"google.golang.org/grpc"
+	"github.com/shayin/lhsync/pb"
+	"github.com/ngaut/log"
+	"context"
 )
 
-type SyncFile struct {
-	FileName string
-	FileSize int64
-	FileMt   time.Time
-	FileMode os.FileMode
-	FileMd5  string
-	FileType bool
-	FileOp   fsnotify.Op
-
-	Content []byte
+type SyncCom struct {
+	conn *grpc.ClientConn
 }
 
-func (sf *SyncFile) Write(p []byte) (int, error) {
-	sf.Content = append(sf.Content, p...)
-	return len(p), nil
+func NewSyncCom(address string) (*SyncCom, error) {
+	conn, err := grpc.Dial(address, grpc.WithInsecure())
+	if err != nil {
+		return nil, err
+	}
+
+	syncCom := &SyncCom{
+		conn: conn,
+	}
+	return syncCom, nil
 }
 
-func (sf *SyncFile) Read(p []byte) (int, error) {
-	n := copy(p, sf.Content)
-	return n, nil
+
+func (sc *SyncCom) SyncToServer(fileData *lhsync_pb.FileData) (*lhsync_pb.SyncResp, error) {
+	client := lhsync_pb.NewLhSyncClient(sc.conn)
+	resp, err := client.SyncFile(context.Background(), fileData)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (sc *SyncCom) Close() {
+	log.Infof("close connect")
+	sc.conn.Close()
 }

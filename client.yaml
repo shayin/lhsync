@@ -1,0 +1,6 @@
+watch_dir:
+  vip: /root/lhsync/client/vip
+  payadmin: /root/lhsync/client/payadmin
+
+dest:
+  127.0.0.1:12356

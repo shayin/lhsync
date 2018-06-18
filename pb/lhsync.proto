@@ -1,0 +1,22 @@
+syntax = "proto3";
+package lhsync_pb;
+
+service LhSync {
+    rpc SyncFile(FileData) returns (SyncResp){}
+}
+
+message FileData {
+    string pathKey = 1;
+    string RelPath = 2;
+    int64 fSize = 3;
+    int64 fMt = 4;
+    uint32 fMode = 5;
+    string fMd5 = 6;
+    bool fType = 7;
+    uint32 fOp = 8;
+    bytes fContent = 9;
+}
+
+message SyncResp {
+    string msg = 1;
+}
